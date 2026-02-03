@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Registar - Biblioteca</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="auth-wrap">
+    <section class="card auth">
+      <h2>Criar conta</h2>
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="flash">{{ messages[0] }}</div>
+        {% endif %}
+      {% endwith %}
+
+      <form method="post" action="/registar" class="auth-form">
+        <input name="username" placeholder="Utilizador" required>
+        <input type="password" name="password" placeholder="Password" required>
+        <button type="submit">Registar</button>
+      </form>
+
+      <p class="muted">
+        Já tens conta? <a href="/login" class="ghost">Entrar</a>
+      </p>
+    </section>
+  </main>
+</body>
+</html>

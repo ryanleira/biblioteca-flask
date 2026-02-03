@@ -226,3 +226,39 @@ button:hover, .ghost:hover{
   border-bottom:1px solid var(--line);
 }
 .statusbar b{ color:var(--text); }
+
+.auth-wrap{
+  min-height: 100vh;
+  display:grid;
+  place-items:center;
+  padding:20px;
+}
+
+.auth{
+  max-width: 420px;
+  width: 100%;
+}
+
+.auth-form{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  margin-top:10px;
+}
+
+.flash{
+  margin-top:10px;
+  padding:10px 12px;
+  border:1px solid rgba(212,175,55,.35);
+  background: rgba(212,175,55,.10);
+  border-radius:12px;
+  color: #e5e7eb;
+}
+
+.user-area{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  justify-content:flex-end;
+}
+.muted{ color: var(--muted); }

@@ -17,6 +17,14 @@
     </div>
   </div>
 
+  <div class="user-area">
+  <span class="muted">Olá, <b>{{ username }}</b></span>
+  <form method="post" action="/logout">
+    <button type="submit" class="ghost">Sair</button>
+  </form>
+ </div>
+
+
   <div class="top-actions">
     <!-- Guardar = download -->
     <a href="/exportar" class="ghost">⬇️ Guardar ficheiro</a>

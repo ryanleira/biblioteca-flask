@@ -1,138 +1,141 @@
-from flask import Flask, render_template, request, redirect, url_for, send_file
+from flask import Flask, render_template, request, redirect, url_for, send_file, flash
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import (
+    LoginManager, login_user, login_required, logout_user, current_user, UserMixin
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+import tempfile
 import json
 import os
-import tempfile
 
 app = Flask(__name__)
+app.config["SECRET_KEY"] = "troca-isto-por-uma-chave-secreta"
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///biblioteca.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-DATA_FILE = "data.json"
+db = SQLAlchemy(app)
+
+login_manager = LoginManager(app)
+login_manager.login_view = "login"  # para onde vai quando não está logado
 
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"livros": [], "desejos": []}
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+# -----------------------
+# Modelos (BD)
+# -----------------------
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
 
 
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+class Livro(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    titulo = db.Column(db.String(200), nullable=False)
+    concluido = db.Column(db.Boolean, default=False, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+
+
+class Desejo(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    titulo = db.Column(db.String(200), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+
+# cria tabelas na 1ª execução
+with app.app_context():
+    db.create_all()
 
 
 def ordenar_livros(livros):
-    # ☐ primeiro, ☑ depois, alfabético pelo título
-    def chave(item):
-        estado = 1 if item.get("concluido", False) else 0
-        return (estado, item.get("titulo", "").strip().lower())
-    livros.sort(key=chave)
+    # ☐ primeiro, ☑ depois, alfabético
+    return sorted(livros, key=lambda x: (1 if x.concluido else 0, x.titulo.strip().lower()))
 
 
-def next_id(data):
-    ids = [x.get("id", 0) for x in data.get("livros", [])] + [x.get("id", 0) for x in data.get("desejos", [])]
-    return (max(ids) + 1) if ids else 1
+# -----------------------
+# Auth (Login/Registo)
+# -----------------------
+@app.get("/registar")
+def registar():
+    return render_template("registar.html")
 
 
-def normalize_loaded_data(raw):
-    """Aceita ficheiros exportados por esta app e também tentativas 'quase certas'."""
-    if not isinstance(raw, dict):
-        return {"livros": [], "desejos": []}
+@app.post("/registar")
+def registar_post():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "").strip()
 
-    livros_in = raw.get("livros", [])
-    desejos_in = raw.get("desejos", [])
+    if not username or not password:
+        flash("Preenche utilizador e password.")
+        return redirect(url_for("registar"))
 
-    livros = []
-    desejos = []
+    if User.query.filter_by(username=username).first():
+        flash("Esse utilizador já existe.")
+        return redirect(url_for("registar"))
 
-    # Livros esperados: {id:int, titulo:str, concluido:bool}
-    if isinstance(livros_in, list):
-        for item in livros_in:
-            if isinstance(item, dict):
-                titulo = str(item.get("titulo", "")).strip()
-                if not titulo:
-                    continue
-                livros.append({
-                    "id": int(item.get("id", 0)) if str(item.get("id", "")).isdigit() else 0,
-                    "titulo": titulo,
-                    "concluido": bool(item.get("concluido", False))
-                })
-            elif isinstance(item, str):
-                # compatibilidade: linhas "☐ titulo" / "☑ titulo" / "titulo"
-                s = item.strip()
-                if not s:
-                    continue
-                concluido = s.startswith("☑")
-                if s.startswith("☐") or s.startswith("☑"):
-                    titulo = s[2:].strip()
-                else:
-                    titulo = s
-                if titulo:
-                    livros.append({"id": 0, "titulo": titulo, "concluido": concluido})
+    user = User(
+        username=username,
+        password_hash=generate_password_hash(password)
+    )
+    db.session.add(user)
+    db.session.commit()
 
-    # Desejos esperados: {id:int, titulo:str}
-    if isinstance(desejos_in, list):
-        for item in desejos_in:
-            if isinstance(item, dict):
-                titulo = str(item.get("titulo", "")).strip()
-                if not titulo:
-                    continue
-                desejos.append({
-                    "id": int(item.get("id", 0)) if str(item.get("id", "")).isdigit() else 0,
-                    "titulo": titulo
-                })
-            elif isinstance(item, str):
-                s = item.strip()
-                if not s:
-                    continue
-                if s.startswith("•"):
-                    titulo = s[2:].strip()
-                else:
-                    titulo = s
-                if titulo:
-                    desejos.append({"id": 0, "titulo": titulo})
-
-    # reatribuir IDs caso faltem/repitam
-    used = set()
-    cur = 1
-
-    def fix_ids(arr):
-        nonlocal cur
-        for it in arr:
-            _id = it.get("id", 0)
-            if not isinstance(_id, int) or _id <= 0 or _id in used:
-                while cur in used:
-                    cur += 1
-                it["id"] = cur
-                used.add(cur)
-                cur += 1
-            else:
-                used.add(_id)
-
-    fix_ids(livros)
-    fix_ids(desejos)
-
-    return {"livros": livros, "desejos": desejos}
+    flash("Conta criada! Faz login.")
+    return redirect(url_for("login"))
 
 
+@app.get("/login")
+def login():
+    return render_template("login.html")
+
+
+@app.post("/login")
+def login_post():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "").strip()
+
+    user = User.query.filter_by(username=username).first()
+    if not user or not check_password_hash(user.password_hash, password):
+        flash("Utilizador ou password incorretos.")
+        return redirect(url_for("login"))
+
+    login_user(user)
+    return redirect(url_for("index"))
+
+
+@app.post("/logout")
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
+
+# -----------------------
+# App principal (por utilizador)
+# -----------------------
 @app.get("/")
+@login_required
 def index():
     q_livros = request.args.get("q_livros", "").strip().lower()
     q_desejos = request.args.get("q_desejos", "").strip().lower()
 
-    data = load_data()
-    ordenar_livros(data["livros"])
+    livros = Livro.query.filter_by(user_id=current_user.id).all()
+    desejos = Desejo.query.filter_by(user_id=current_user.id).all()
 
-    livros = data["livros"]
-    desejos = data["desejos"]
+    livros = ordenar_livros(livros)
 
     if q_livros:
-        livros = [x for x in livros if q_livros in x["titulo"].lower()]
+        livros = [x for x in livros if q_livros in x.titulo.lower()]
     if q_desejos:
-        desejos = [x for x in desejos if q_desejos in x["titulo"].lower()]
+        desejos = [x for x in desejos if q_desejos in x.titulo.lower()]
 
-    a_ler = sum(1 for x in data["livros"] if not x.get("concluido", False))
-    concluidos = sum(1 for x in data["livros"] if x.get("concluido", False))
-    total_desejos = len(data["desejos"])
+    a_ler = Livro.query.filter_by(user_id=current_user.id, concluido=False).count()
+    concluidos = Livro.query.filter_by(user_id=current_user.id, concluido=True).count()
+    total_desejos = Desejo.query.filter_by(user_id=current_user.id).count()
     total = a_ler + concluidos + total_desejos
 
     return render_template(
@@ -142,18 +145,113 @@ def index():
         q_livros=request.args.get("q_livros", ""),
         q_desejos=request.args.get("q_desejos", ""),
         status={"a_ler": a_ler, "concluidos": concluidos, "desejos": total_desejos, "total": total},
+        username=current_user.username
     )
 
 
-# ----------------------------
-# EXPORTAR (download)
-# ----------------------------
-@app.get("/exportar")
-def exportar():
-    data = load_data()
+@app.post("/livros/add")
+@login_required
+def livros_add():
+    titulo = request.form.get("titulo", "").strip()
+    if titulo:
+        existe = Livro.query.filter_by(user_id=current_user.id, titulo=titulo).first()
+        if not existe:
+            db.session.add(Livro(titulo=titulo, concluido=False, user_id=current_user.id))
+            db.session.commit()
+    return redirect(url_for("index"))
 
-    # opcional: incluir versão do ficheiro
-    export_data = {"version": 1, "livros": data["livros"], "desejos": data["desejos"]}
+
+@app.post("/desejos/add")
+@login_required
+def desejos_add():
+    titulo = request.form.get("titulo", "").strip()
+    if titulo:
+        existe = Desejo.query.filter_by(user_id=current_user.id, titulo=titulo).first()
+        if not existe:
+            db.session.add(Desejo(titulo=titulo, user_id=current_user.id))
+            db.session.commit()
+    return redirect(url_for("index"))
+
+
+@app.post("/livros/toggle/<int:item_id>")
+@login_required
+def livros_toggle(item_id):
+    livro = Livro.query.filter_by(id=item_id, user_id=current_user.id).first_or_404()
+    livro.concluido = not livro.concluido
+    db.session.commit()
+    return redirect(url_for("index"))
+
+
+@app.post("/livros/delete/<int:item_id>")
+@login_required
+def livros_delete(item_id):
+    livro = Livro.query.filter_by(id=item_id, user_id=current_user.id).first_or_404()
+    db.session.delete(livro)
+    db.session.commit()
+    return redirect(url_for("index"))
+
+
+@app.post("/desejos/delete/<int:item_id>")
+@login_required
+def desejos_delete(item_id):
+    desejo = Desejo.query.filter_by(id=item_id, user_id=current_user.id).first_or_404()
+    db.session.delete(desejo)
+    db.session.commit()
+    return redirect(url_for("index"))
+
+
+@app.post("/desejos/mover_para_livros/<int:item_id>")
+@login_required
+def desejos_mover_para_livros(item_id):
+    desejo = Desejo.query.filter_by(id=item_id, user_id=current_user.id).first_or_404()
+    # remove desejo
+    titulo = desejo.titulo
+    db.session.delete(desejo)
+
+    # cria livro se não existir
+    existe = Livro.query.filter_by(user_id=current_user.id, titulo=titulo).first()
+    if not existe:
+        db.session.add(Livro(titulo=titulo, concluido=False, user_id=current_user.id))
+
+    db.session.commit()
+    return redirect(url_for("index"))
+
+
+@app.post("/livros/mover_para_desejos/<int:item_id>")
+@login_required
+def livros_mover_para_desejos(item_id):
+    livro = Livro.query.filter_by(id=item_id, user_id=current_user.id).first_or_404()
+
+    if livro.concluido:
+        # regra: não mover concluídos
+        return redirect(url_for("index"))
+
+    titulo = livro.titulo
+    db.session.delete(livro)
+
+    existe = Desejo.query.filter_by(user_id=current_user.id, titulo=titulo).first()
+    if not existe:
+        db.session.add(Desejo(titulo=titulo, user_id=current_user.id))
+
+    db.session.commit()
+    return redirect(url_for("index"))
+
+
+# -----------------------
+# Exportar/Importar POR UTILIZADOR
+# -----------------------
+@app.get("/exportar")
+@login_required
+def exportar():
+    livros = Livro.query.filter_by(user_id=current_user.id).all()
+    desejos = Desejo.query.filter_by(user_id=current_user.id).all()
+
+    export_data = {
+        "version": 1,
+        "user": current_user.username,
+        "livros": [{"titulo": x.titulo, "concluido": x.concluido} for x in livros],
+        "desejos": [{"titulo": x.titulo} for x in desejos],
+    }
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
     with open(tmp.name, "w", encoding="utf-8") as f:
@@ -167,10 +265,8 @@ def exportar():
     )
 
 
-# ----------------------------
-# IMPORTAR (upload)
-# ----------------------------
 @app.post("/importar")
+@login_required
 def importar():
     file = request.files.get("ficheiro")
     if not file or not file.filename.lower().endswith(".json"):
@@ -178,97 +274,36 @@ def importar():
 
     try:
         raw = json.load(file)
-        # aceita {version, livros, desejos} ou {livros, desejos}
-        if isinstance(raw, dict) and "version" in raw and ("livros" in raw or "desejos" in raw):
-            # ok
-            pass
-        data = normalize_loaded_data(raw)
-        save_data(data)
+        livros_in = raw.get("livros", [])
+        desejos_in = raw.get("desejos", [])
+
+        # limpa dados do utilizador (ou muda para "mesclar", se preferires)
+        Livro.query.filter_by(user_id=current_user.id).delete()
+        Desejo.query.filter_by(user_id=current_user.id).delete()
+
+        for it in livros_in:
+            titulo = str(it.get("titulo", "")).strip()
+            if titulo:
+                db.session.add(Livro(
+                    titulo=titulo,
+                    concluido=bool(it.get("concluido", False)),
+                    user_id=current_user.id
+                ))
+
+        for it in desejos_in:
+            titulo = str(it.get("titulo", "")).strip()
+            if titulo:
+                db.session.add(Desejo(
+                    titulo=titulo,
+                    user_id=current_user.id
+                ))
+
+        db.session.commit()
     except Exception:
-        # se falhar, não altera nada
         pass
 
     return redirect(url_for("index"))
 
 
-# ----------------------------
-# Ações Livros / Desejos
-# ----------------------------
-@app.post("/livros/add")
-def livros_add():
-    titulo = request.form.get("titulo", "").strip()
-    if titulo:
-        data = load_data()
-        if not any(x["titulo"].lower() == titulo.lower() for x in data["livros"]):
-            data["livros"].append({"id": next_id(data), "titulo": titulo, "concluido": False})
-            save_data(data)
-    return redirect(url_for("index"))
-
-
-@app.post("/desejos/add")
-def desejos_add():
-    titulo = request.form.get("titulo", "").strip()
-    if titulo:
-        data = load_data()
-        if not any(x["titulo"].lower() == titulo.lower() for x in data["desejos"]):
-            data["desejos"].append({"id": next_id(data), "titulo": titulo})
-            save_data(data)
-    return redirect(url_for("index"))
-
-
-@app.post("/livros/toggle/<int:item_id>")
-def livros_toggle(item_id):
-    data = load_data()
-    for x in data["livros"]:
-        if x["id"] == item_id:
-            x["concluido"] = not x.get("concluido", False)
-            break
-    save_data(data)
-    return redirect(url_for("index"))
-
-
-@app.post("/livros/delete/<int:item_id>")
-def livros_delete(item_id):
-    data = load_data()
-    data["livros"] = [x for x in data["livros"] if x["id"] != item_id]
-    save_data(data)
-    return redirect(url_for("index"))
-
-
-@app.post("/desejos/delete/<int:item_id>")
-def desejos_delete(item_id):
-    data = load_data()
-    data["desejos"] = [x for x in data["desejos"] if x["id"] != item_id]
-    save_data(data)
-    return redirect(url_for("index"))
-
-
-@app.post("/desejos/mover_para_livros/<int:item_id>")
-def desejos_mover_para_livros(item_id):
-    data = load_data()
-    item = next((x for x in data["desejos"] if x["id"] == item_id), None)
-    if item:
-        data["desejos"] = [x for x in data["desejos"] if x["id"] != item_id]
-        if not any(x["titulo"].lower() == item["titulo"].lower() for x in data["livros"]):
-            data["livros"].append({"id": next_id(data), "titulo": item["titulo"], "concluido": False})
-    save_data(data)
-    return redirect(url_for("index"))
-
-
-@app.post("/livros/mover_para_desejos/<int:item_id>")
-def livros_mover_para_desejos(item_id):
-    data = load_data()
-    item = next((x for x in data["livros"] if x["id"] == item_id), None)
-    if item:
-        # regra: não mover se concluído
-        if item.get("concluido", False):
-            return redirect(url_for("index"))
-        data["livros"] = [x for x in data["livros"] if x["id"] != item_id]
-        if not any(x["titulo"].lower() == item["titulo"].lower() for x in data["desejos"]):
-            data["desejos"].append({"id": next_id(data), "titulo": item["titulo"]})
-    save_data(data)
-    return redirect(url_for("index"))
-
-
 if __name__ == "__main__":
-    app.run
+    app.run()
