@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Biblioteca Pessoal</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">📚</div>
+    <div>
+      <h1>Biblioteca Pessoal</h1>
+      <p>Organiza leituras e lista de desejos</p>
+    </div>
+  </div>
+
+  <div class="top-actions">
+    <!-- Guardar = download -->
+    <a href="/exportar" class="ghost">⬇️ Guardar ficheiro</a>
+
+    <!-- Carregar = upload -->
+    <form class="upload" method="post" action="/importar" enctype="multipart/form-data">
+      <input id="ficheiro" type="file" name="ficheiro" accept=".json" required>
+      <button type="submit">⬆️ Carregar ficheiro</button>
+    </form>
+  </div>
+</header>
+
+<div class="statusbar">
+  <span>☐ A ler: <b>{{ status.a_ler }}</b></span>
+  <span>☑ Concluídos: <b>{{ status.concluidos }}</b></span>
+  <span>• Desejos: <b>{{ status.desejos }}</b></span>
+  <span>Total: <b>{{ status.total }}</b></span>
+</div>
+
+<main class="grid">
+  <!-- Livros -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Livros</h2>
+      <form class="search" method="get" action="/">
+        <input name="q_livros" placeholder="Pesquisar livros..." value="{{ q_livros }}">
+        <input type="hidden" name="q_desejos" value="{{ q_desejos }}">
+        <button type="submit">Pesquisar</button>
+        <a class="ghost" href="/">Limpar</a>
+      </form>
+    </div>
+
+    <form class="add" method="post" action="/livros/add">
+      <input name="titulo" placeholder="Adicionar livro..." required>
+      <button type="submit">Adicionar</button>
+    </form>
+
+    <ul class="list">
+      {% for x in livros %}
+      <li class="item {{ 'done' if x.concluido else '' }}">
+        <div class="title">
+          <span class="badge">{{ "☑" if x.concluido else "☐" }}</span>
+          {{ x.titulo }}
+        </div>
+
+        <div class="actions">
+          <form method="post" action="/livros/toggle/{{ x.id }}">
+            <button type="submit">{{ "Reabrir" if x.concluido else "Concluir" }}</button>
+          </form>
+
+          {% if not x.concluido %}
+          <form method="post" action="/livros/mover_para_desejos/{{ x.id }}">
+            <button type="submit" class="ghost">Voltar p/ desejos</button>
+          </form>
+          {% endif %}
+
+          <form method="post" action="/livros/delete/{{ x.id }}">
+            <button type="submit" class="danger">Remover</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+      {% if livros|length == 0 %}
+      <li class="empty">Sem resultados.</li>
+      {% endif %}
+    </ul>
+  </section>
+
+  <!-- Desejos -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Lista de desejos</h2>
+      <form class="search" method="get" action="/">
+        <input name="q_desejos" placeholder="Pesquisar desejos..." value="{{ q_desejos }}">
+        <input type="hidden" name="q_livros" value="{{ q_livros }}">
+        <button type="submit">Pesquisar</button>
+        <a class="ghost" href="/">Limpar</a>
+      </form>
+    </div>
+
+    <form class="add" method="post" action="/desejos/add">
+      <input name="titulo" placeholder="Adicionar desejo..." required>
+      <button type="submit">Adicionar</button>
+    </form>
+
+    <ul class="list">
+      {% for x in desejos %}
+      <li class="item">
+        <div class="title">
+          <span class="badge">•</span>
+          {{ x.titulo }}
+        </div>
+
+        <div class="actions">
+          <form method="post" action="/desejos/mover_para_livros/{{ x.id }}">
+            <button type="submit">Começar a ler</button>
+          </form>
+
+          <form method="post" action="/desejos/delete/{{ x.id }}">
+            <button type="submit" class="danger">Remover</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+      {% if desejos|length == 0 %}
+      <li class="empty">Sem resultados.</li>
+      {% endif %}
+    </ul>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>Dica: “Guardar ficheiro” faz download. “Carregar ficheiro” importa um JSON exportado.</span>
+</footer>
+
+</body>
+</html>
